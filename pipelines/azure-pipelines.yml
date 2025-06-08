@@ -1,0 +1,119 @@
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - infrastructure/*
+      - functions/*
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+- group: repo-secrets                      # Azure Key Vault-backed library
+- name: pythonVersion
+  value: '3.11'
+- name: terraformVersion
+  value: '1.7.x'
+- name: azureServiceConnection
+  value: 'AZURE-SERVICE-CONNECTION'
+- name: functionAppName
+  value: 'FUNCTION-APP-NAME'
+- name: functionAppDirectory
+  value: 'functions'
+
+stages:
+# ───────────────────── Terraform ─────────────────────
+- stage: TerraformInfra
+  jobs:
+  - job: Terraform
+    steps:
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+
+    - task: TerraformTaskV4@4
+      displayName: terraform init
+      inputs:
+        provider: azurerm
+        command: init
+        backendServiceArm: '$(azureServiceConnection)'
+        backendAzureRmResourceGroupName: 'Terraform'
+        backendAzureRmStorageAccountName: 'tfstate'
+        backendAzureRmContainerName: 'state'
+        backendAzureRmKey: 'munki.tfstate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/infrastructure'
+
+    - task: TerraformTaskV4@4
+      displayName: terraform plan
+      name: plan
+      inputs:
+        provider: azurerm
+        command: plan
+        environmentServiceNameAzureRM: '$(azureServiceConnection)'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/infrastructure'
+        commandOptions: |
+          -lock=true
+          -lock-timeout=300s
+          -var="azure_tenant_id=$(AzureTenantId)"
+          -var="azure_storage_connection_string=$(AzureStorageConnectionString)"
+          -var="devops_resource_infrasec_group_object_id=$(DevopsResourceInfrasecGroupObjectId)"
+          -var="devices_graph_id=$(DevicesGraphId)"
+          -var="devices_graph_secret=$(DevicesGraphSecret)"
+          -var="munki_username=$(MunkiUsername)"
+          -var="munki_password=$(MunkiPassword)"
+          -out=tfplan
+
+    - bash: |
+        if [ -s tfplan ]; then echo "##vso[task.setvariable variable=TerraformHasChanges]true"; else echo "##vso[task.setvariable variable=TerraformHasChanges]false"; fi
+      workingDirectory: '$(System.DefaultWorkingDirectory)/infrastructure'
+      displayName: detect changes
+
+    - task: TerraformTaskV4@4
+      displayName: terraform apply
+      condition: eq(variables['TerraformHasChanges'], 'true')
+      inputs:
+        provider: azurerm
+        command: apply
+        environmentServiceNameAzureRM: '$(azureServiceConnection)'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/infrastructure'
+        commandOptions: '-auto-approve tfplan'
+
+# ───────────────────── Functions ─────────────────────
+- stage: DeployFunctions
+  dependsOn: TerraformInfra
+  jobs:
+  - job: Deploy
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+        addToPath: true
+
+    - bash: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        sudo apt-get update -y
+        sudo apt-get install -y zip azure-functions-core-tools-4
+      workingDirectory: '$(Build.SourcesDirectory)/$(functionAppDirectory)'
+      displayName: build environment
+
+    - bash: |
+        find . -type f -print | zip $(Build.ArtifactStagingDirectory)/functionsapp.zip -@
+      workingDirectory: '$(Build.SourcesDirectory)/$(functionAppDirectory)'
+      displayName: package app
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/functionsapp.zip'
+        ArtifactName: drop
+        publishLocation: Container
+
+    - task: AzureFunctionApp@1
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        appType: functionAppLinux
+        appName: '$(functionAppName)'
+        package: '$(Build.ArtifactStagingDirectory)/functionsapp.zip'
+        runtimeStack: 'PYTHON|$(pythonVersion)'
+      displayName: deploy function
