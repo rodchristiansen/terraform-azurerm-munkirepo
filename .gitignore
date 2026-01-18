@@ -1,0 +1,33 @@
+# Local .terraform directories
+.terraform/
+
+# Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+
+# Exclude all backups
+*.tfplan
+
+# Ignore override files (if any)
+override.tf
+override.tf.json
+
+# Ignore environment files
+*.tfvars
+*.tfvars.json
+
+# Ignore any other files that are not needed
+*.log
+*.zip
+*.tgz
+*.tar.gz
+
+# macOS system files
+.DS_Store
+
+# Thumbnails
+Thumbs.db
+
