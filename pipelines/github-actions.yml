@@ -1,104 +1,59 @@
-name: CI
+name: Deploy Munki Infrastructure
 
 on:
   push:
     branches: [main]
     paths:
-      - 'infrastructure/**'
-      - 'functions/**'
+      - '*.tf'
+      - 'modules/**'
+  workflow_dispatch:
 
 env:
-  PYTHON_VERSION: '3.11'
-  ARM_CLIENT_ID:   ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
 jobs:
-# ───────────────────── Terraform ─────────────────────
   terraform:
+    name: Deploy Infrastructure
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infrastructure
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.7.x
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.x
 
-    - uses: azure/login@v2
-      with:
-        client-id: ${{ env.ARM_CLIENT_ID }}
-        tenant-id: ${{ env.ARM_TENANT_ID }}
-        subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.ARM_CLIENT_ID }}
+          tenant-id: ${{ env.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
 
-    - run: |
-        terraform init \
-          -backend-config="resource_group_name=Terraform" \
-          -backend-config="storage_account_name=tfstate" \
-          -backend-config="container_name=state" \
-          -backend-config="key=munki.tfstate"
-      name: terraform init
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=Terraform" \
+            -backend-config="storage_account_name=tfstate" \
+            -backend-config="container_name=state" \
+            -backend-config="key=munki.tfstate"
 
-    - id: plan
-      run: |
-        terraform plan \
-          -lock=true -out=tfplan \
-          -var="azure_tenant_id=${{ secrets.AZURE_TENANT_ID }}" \
-          -var="azure_storage_connection_string=${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
-          -var="devops_resource_infrasec_group_object_id=${{ secrets.DEVOPS_GROUP_ID }}" \
-          -var="devices_graph_id=${{ secrets.DEVICES_GRAPH_ID }}" \
-          -var="devices_graph_secret=${{ secrets.DEVICES_GRAPH_SECRET }}" \
-          -var="munki_username=${{ secrets.MUNKI_USERNAME }}" \
-          -var="munki_password=${{ secrets.MUNKI_PASSWORD }}" \
-          -detailed-exitcode || echo "exitcode=$?" >> $GITHUB_OUTPUT
-      name: terraform plan
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -lock=true -out=tfplan \
+            -var="azure_tenant_id=${{ secrets.AZURE_TENANT_ID }}" \
+            -var="devops_group_object_id=${{ secrets.DEVOPS_GROUP_ID }}" \
+            -var="munki_username=${{ secrets.MUNKI_USERNAME }}" \
+            -var="munki_password=${{ secrets.MUNKI_PASSWORD }}" \
+            -var="munki_client_token=${{ secrets.MUNKI_CLIENT_TOKEN }}" \
+            -detailed-exitcode || echo "exitcode=$?" >> $GITHUB_OUTPUT
 
-    - if: steps.plan.outputs.exitcode == '2'
-      run: terraform apply -auto-approve tfplan
-      name: terraform apply
-
-# ───────────────────── Functions ─────────────────────
-  deploy_functions:
-    needs: terraform
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: functions
-    steps:
-    - uses: actions/checkout@v4
-
-    - uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        sudo apt-get update -y
-        sudo apt-get install -y zip azure-functions-core-tools-4
-      name: build environment
-
-    - run: |
-        find . -type f -print | zip ${{ github.workspace }}/functionsapp.zip -@
-      name: package app
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: functionsapp
-        path: functionsapp.zip
-
-    - uses: azure/login@v2
-      with:
-        client-id: ${{ env.ARM_CLIENT_ID }}
-        tenant-id: ${{ env.ARM_TENANT_ID }}
-        subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
-
-    - uses: Azure/functions-action@v1
-      with:
-        app-name: FUNCTION-APP-NAME
-        package: functionsapp.zip
-        publish-profile: ${{ secrets.FUNCTIONAPP_PUBLISH_PROFILE }}
-        runtime-stack: 'PYTHON|3.11'
+      - name: Terraform Apply
+        if: steps.plan.outputs.exitcode == '2'
+        run: terraform apply -auto-approve tfplan
