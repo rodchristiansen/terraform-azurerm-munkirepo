@@ -18,13 +18,13 @@ Terraform module that provisions an **Azure**-backed [Munki](https://github.com/
                          ▼
         ┌───────────────────────────────────┐
         │      Azure Storage Account        │
-        │  - "repo" container (private)     │
-        │  - "public" container (bootstrap) │
+        │  - "repo" container               │
+        │  - "public" container             │
         │  - "logs" container               │
         └───────────────────────────────────┘
 ```
 
-**Key Features:**
+**Key Features of this infra:**
 - **No Function App required** - Authentication happens at the Front Door edge
 - **Cost-effective** - No compute costs, just storage and CDN
 - **Simple** - No code to maintain or deploy
